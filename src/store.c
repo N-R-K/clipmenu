@@ -568,7 +568,8 @@ bool cs_snip_iter(struct ref_guard *guard, enum cs_iter_direction direction,
 
     struct cs_snip *oldest = guard->cs->snips;
     struct cs_snip *newest = oldest + (guard->cs->header->nr_snips - 1);
-    struct cs_snip *stop = direction == CS_ITER_NEWEST_FIRST ? oldest : newest;
+    const struct cs_snip *stop =
+        direction == CS_ITER_NEWEST_FIRST ? oldest : newest;
 
     if (!*snip) {
         *snip = direction == CS_ITER_NEWEST_FIRST ? newest : oldest;
