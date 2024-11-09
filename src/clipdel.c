@@ -51,9 +51,10 @@ int main(int argc, char *argv[]) {
 
     _drop_(config_free) struct config cfg = setup("clipdel");
 
-    struct clipdel_state state;
-    state.mode = DELETE_DRY_RUN;
-    state.invert_match = false;
+    struct clipdel_state state = {
+        .mode = DELETE_DRY_RUN,
+        .invert_match = false,
+    };
 
     int opt;
     while ((opt = getopt(argc, argv, "dv")) != -1) {
