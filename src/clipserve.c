@@ -116,8 +116,21 @@ static void _nonnull_ serve_clipboard(uint64_t hash,
 
     selections[1] = XInternAtom(dpy, "CLIPBOARD", False);
     for (size_t i = 0; i < arrlen(selections); i++) {
-        XSetSelectionOwner(dpy, selections[i], win, CurrentTime);
-        expect(XGetSelectionOwner(dpy, selections[i]) == win); // ICCCM 2.1
+        bool success = false;
+        for (int attempts = 0; attempts < 5; attempts++) {
+            XSetSelectionOwner(dpy, selections[i], win, CurrentTime);
+
+            // According to ICCCM 2.1, a client acquiring a selection should
+            // confirm success by verifying with GetSelectionOwner.
+            if (XGetSelectionOwner(dpy, selections[i]) == win) {
+                success = true;
+                break;
+            }
+        }
+        if (!success) {
+            die("Failed to set selection for %s\n",
+                XGetAtomName(dpy, selections[i]));
+        }
     }
     remaining_selections = arrlen(selections);
 
