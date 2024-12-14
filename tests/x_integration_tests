@@ -195,6 +195,25 @@ len_after=$(xsel -po | wc -c)
 # Make sure we got the whole thing
 (( len_before == len_after ))
 
+# Issue #241. Put a large clipboard selection via INCR, then put something else
+# small immediately after.
+xsel -bc
+settle
+check_nr_clips 5
+
+# Large selection (INCR)
+printf '%.0sa' {1..4001} | xsel -b
+long_settle
+
+check_nr_clips 6
+
+# After large selection is stored, put something small that's a possible #
+# partial (non-INCR)
+printf a | xsel -b
+settle
+
+check_nr_clips 6
+
 if (( _UNSHARED )); then
     umount -l /tmp
 fi

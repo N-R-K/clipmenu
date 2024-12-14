@@ -34,6 +34,32 @@ static struct incr_transfer *it_list;
 
 static struct cm_selections sels[CM_SEL_MAX];
 
+enum clip_text_source {
+    CLIP_TEXT_SOURCE_X,
+    CLIP_TEXT_SOURCE_MALLOC,
+    CLIP_TEXT_SOURCE_INVALID
+};
+
+struct clip_text {
+    char *data;
+    enum clip_text_source source;
+};
+
+static void free_clip_text(struct clip_text *ct) {
+    expect(ct->source != CLIP_TEXT_SOURCE_INVALID);
+
+    if (ct->data) {
+        if (ct->source == CLIP_TEXT_SOURCE_X) {
+            XFree(ct->data);
+        } else {
+            free(ct->data);
+        }
+        ct->data = NULL;
+    }
+
+    ct->source = CLIP_TEXT_SOURCE_INVALID;
+}
+
 /**
  * Check if a text s1 is a possible partial of s2.
  *
@@ -66,7 +92,8 @@ static bool is_possible_partial(const char *s1, const char *s2) {
  * happen a conversion must have been performed in an earlier iteration with
  * XConvertSelection.
  */
-static char *get_clipboard_text(Atom clip_atom) {
+static struct clip_text get_clipboard_text(Atom clip_atom) {
+    struct clip_text ct = {NULL, CLIP_TEXT_SOURCE_X};
     unsigned char *cur_text;
     Atom actual_type;
     int actual_format;
@@ -76,16 +103,18 @@ static char *get_clipboard_text(Atom clip_atom) {
                                  AnyPropertyType, &actual_type, &actual_format,
                                  &nitems, &bytes_after, &cur_text);
     if (res != Success) {
-        return NULL;
+        return ct;
     }
 
     if (actual_type == incr_atom) {
         dbg("Unexpected INCR transfer detected\n");
         XFree(cur_text);
-        return NULL;
+        return ct;
     }
 
-    return (char *)cur_text;
+    ct.data = (char *)cur_text;
+
+    return ct;
 }
 
 /**
@@ -226,27 +255,30 @@ static void maybe_trim(void) {
  * Store the clipboard text. If the text is a possible partial of the last clip
  * and it was received shortly afterwards, replace instead of adding.
  */
-static uint64_t store_clip(char *text) {
-    static char *last_text = NULL;
+static uint64_t store_clip(struct clip_text *ct) {
+    static struct clip_text last_text = {NULL, CLIP_TEXT_SOURCE_MALLOC};
     static time_t last_text_time;
 
     dbg("Clipboard text is considered salient, storing\n");
     time_t current_time = time(NULL);
     uint64_t hash;
-    if (last_text &&
+
+    if (last_text.data &&
         difftime(current_time, last_text_time) <= PARTIAL_MAX_SECS &&
-        is_possible_partial(last_text, text)) {
+        is_possible_partial(last_text.data, ct->data)) {
         dbg("Possible partial of last clip, replacing\n");
-        expect(cs_replace(&cs, CS_ITER_NEWEST_FIRST, 0, text, &hash) == 0);
+        expect(cs_replace(&cs, CS_ITER_NEWEST_FIRST, 0, ct->data, &hash) == 0);
     } else {
-        expect(cs_add(&cs, text, &hash) == 0);
+        expect(cs_add(&cs, ct->data, &hash) == 0);
     }
 
-    if (last_text) {
-        XFree(last_text);
-    }
-    last_text = text;
+    free_clip_text(&last_text);
+    last_text = *ct;
     last_text_time = current_time;
+
+    // The caller no longer owns this data.
+    ct->data = NULL;
+    ct->source = CLIP_TEXT_SOURCE_INVALID;
 
     return hash;
 }
@@ -263,23 +295,26 @@ static void incr_receive_finish(struct incr_transfer *it) {
     }
 
     it_dbg(it, "Finished (bytes buffered: %zu)\n", it->data_size);
-    _drop_(free) char *text = malloc(it->data_size + 1);
+    char *text = malloc(it->data_size + 1);
     expect(text);
     memcpy(text, it->data, it->data_size);
     text[it->data_size] = '\0';
 
+    struct clip_text ct = {text, CLIP_TEXT_SOURCE_MALLOC};
+
     char line[CS_SNIP_LINE_SIZE];
-    first_line(text, line);
+    first_line(ct.data, line);
     it_dbg(it, "First line: %s\n", line);
 
-    if (is_salient_text(text)) {
-        uint64_t hash = store_clip(text);
+    if (is_salient_text(ct.data)) {
+        uint64_t hash = store_clip(&ct);
         maybe_trim();
         if (cfg.owned_selections[sel].active && cfg.own_clipboard) {
             run_clipserve(hash);
         }
     } else {
         it_dbg(it, "Clipboard text is whitespace only, ignoring\n");
+        free_clip_text(&ct);
     }
 
     free(it->data);
@@ -399,17 +434,17 @@ static int handle_property_notify(const XPropertyEvent *pe) {
 
         // store_clip will take care of freeing this later when it's gone from
         // last_text.
-        char *text = get_clipboard_text(pe->atom);
-        if (!text) {
+        struct clip_text ct = get_clipboard_text(pe->atom);
+        if (!ct.data) {
             dbg("Failed to get clipboard text\n");
             return -EINVAL;
         }
         char line[CS_SNIP_LINE_SIZE];
-        first_line(text, line);
+        first_line(ct.data, line);
         dbg("First line: %s\n", line);
 
-        if (is_salient_text(text)) {
-            uint64_t hash = store_clip(text);
+        if (is_salient_text(ct.data)) {
+            uint64_t hash = store_clip(&ct);
             maybe_trim();
             /* We only own CLIPBOARD because otherwise the behaviour is wonky:
              *
@@ -423,7 +458,7 @@ static int handle_property_notify(const XPropertyEvent *pe) {
             }
         } else {
             dbg("Clipboard text is whitespace only, ignoring\n");
-            XFree(text);
+            free_clip_text(&ct);
         }
     }
 
